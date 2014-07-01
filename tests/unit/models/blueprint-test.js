@@ -6,13 +6,18 @@ var MockUI            = require('../../helpers/mock-ui');
 var assert            = require('assert');
 var glob              = require('glob');
 var path              = require('path');
-var tmp               = require('../../helpers/tmp');
 var walkSync          = require('walk-sync');
+var rimraf            = require('rimraf');
+var root              = process.cwd();
+var tmp               = require('tmp-sync');
+var tmproot           = path.join(root, 'tmp');
 
 var defaultBlueprints = path.resolve(__dirname, '..', '..', '..', 'blueprints');
 var fixtureBlueprints = path.resolve(__dirname, '..', '..', 'fixtures', 'blueprints');
 var basicBlueprint    = path.join(fixtureBlueprints, 'basic');
 var basicNewBlueprint = path.join(fixtureBlueprints, 'basic_2');
+
+var defaultIgnoredFiles = Blueprint.ignoredFiles;
 
 var basicBlueprintFiles = [
   '.ember-cli',
@@ -29,6 +34,9 @@ assert.match = function(actual, matcher) {
 };
 
 describe('Blueprint', function() {
+  beforeEach(function() {
+    Blueprint.ignoredFiles = defaultIgnoredFiles;
+  });
 
   describe('.lookup', function() {
     it('uses an explicit path if one is given', function() {
@@ -105,19 +113,22 @@ describe('Blueprint', function() {
     var ui;
     var project;
     var options;
+    var tmpdir;
 
     beforeEach(function() {
-      tmp.setup('./tmp');
-      process.chdir('./tmp');
-
+      tmpdir    = tmp.in(tmproot);
       blueprint = new Blueprint(basicBlueprint);
       ui        = new MockUI();
       project   = new MockProject();
-      options   = { ui: ui, project: project, target: '.' };
+      options   = {
+        ui: ui,
+        project: project,
+        target: tmpdir
+      };
     });
 
     afterEach(function() {
-      tmp.teardown('./tmp');
+      rimraf.sync(tmproot);
     });
 
     it('installs basic files', function() {
@@ -125,7 +136,7 @@ describe('Blueprint', function() {
 
       return blueprint.install(options)
         .then(function() {
-          var actualFiles = walkSync('.').sort();
+          var actualFiles = walkSync(tmpdir).sort();
           var output = ui.output.trim().split('\n');
 
           assert.match(output.shift(), /^installing/);
@@ -155,7 +166,7 @@ describe('Blueprint', function() {
           return blueprint.install(options);
         })
         .then(function() {
-          var actualFiles = walkSync('.').sort();
+          var actualFiles = walkSync(tmpdir).sort();
           var output = ui.output.trim().split('\n');
 
           assert.match(output.shift(), /^installing/);
@@ -195,7 +206,7 @@ describe('Blueprint', function() {
           return blueprintNew.install(options);
         })
         .then(function() {
-          var actualFiles = walkSync('.').sort();
+          var actualFiles = walkSync(tmpdir).sort();
           var output = ui.output.trim().split('\n');
           assert.match(output.shift(), /^installing/);
           assert.match(output.shift(), /Overwrite.*foo.*\?/); // Prompt
@@ -212,6 +223,53 @@ describe('Blueprint', function() {
         });
     });
 
+    describe('called on an existing project', function() {
+      beforeEach(function() {
+        Blueprint.ignoredUpdateFiles.push('foo.txt');
+      });
+
+      it('ignores files in ignoredUpdateFiles', function() {
+        return blueprint.install(options)
+          .then(function() {
+            var output = ui.output.trim().split('\n');
+            ui.output = '';
+
+            assert.match(output.shift(), /^installing/);
+            assert.match(output.shift(), /create.* \.ember-cli/);
+            assert.match(output.shift(), /create.* \.gitignore/);
+            assert.match(output.shift(), /create.* foo.txt/);
+            assert.match(output.shift(), /create.* test.txt/);
+            assert.equal(output.length, 0);
+
+            var blueprintNew = new Blueprint(basicNewBlueprint);
+
+            setTimeout(function(){
+              ui.inputStream.write('n\n');
+            }, 25);
+
+            setTimeout(function(){
+              ui.inputStream.write('n\n');
+            }, 50);
+
+            options.project.isEmberCLIProject = function() { return true; };
+
+            return blueprintNew.install(options);
+          })
+          .then(function() {
+            var actualFiles = walkSync(tmpdir).sort();
+            var output = ui.output.trim().split('\n');
+            assert.match(output.shift(), /^installing/);
+            assert.match(output.shift(), /Overwrite.*test.*\?/); // Prompt
+            assert.match(output.shift(), /Overwrite.*test.*No, skip/);
+            assert.match(output.shift(), /identical.* \.ember-cli/);
+            assert.match(output.shift(), /identical.* \.gitignore/);
+            assert.match(output.shift(), /skip.* test.txt/);
+            assert.equal(output.length, 0);
+
+            assert.deepEqual(actualFiles, basicBlueprintFiles);
+          });
+      });
+    });
 
     it('throws error when there is a trailing forward slash in entityName', function(){
       options.entity = { name: 'foo/' };
